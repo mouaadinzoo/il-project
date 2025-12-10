@@ -1,0 +1,33 @@
+﻿.app {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #eef2ff, #e0f2fe);
+}
+
+.app__header {
+  background: white;
+  padding: 24px 28px;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app__header p {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.app__header a {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.app__header a:hover {
+  text-decoration: underline;
+}

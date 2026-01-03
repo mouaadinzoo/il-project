@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import VideoPlayer from '../components/VideoPlayer';
 import Playlist from '../components/Playlist';
 import Chat from '../components/Chat';
@@ -10,6 +10,7 @@ export default function Room() {
   const { roomId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const user = useMemo(() => searchParams.get('user') || 'Guest', [searchParams]);
   const [shareCopied, setShareCopied] = useState(false);
   const [roomTitle, setRoomTitle] = useState('WatchTogether Room');
@@ -17,14 +18,26 @@ export default function Room() {
 
   const [videoId, setVideoId] = useState('dQw4w9WgXcQ');
   const [playlist, setPlaylist] = useState(['dQw4w9WgXcQ']);
-  const { socketConnected, remoteSync, messages, sendVideoAction, sendChatMessage } = useSocket({
+  const hostSecret = useMemo(() => {
+    if (location.state?.hostSecret) return location.state.hostSecret;
+    if (roomId) return sessionStorage.getItem(`hostSecret:${roomId}`);
+    return null;
+  }, [location.state, roomId]);
+  const { socketConnected, remoteSync, messages, isHost, sendVideoAction, sendChatMessage } = useSocket({
     roomId,
-    user
+    user,
+    hostSecret
   });
 
   useEffect(() => {
     if (!roomId) navigate('/');
   }, [roomId, navigate]);
+
+  useEffect(() => {
+    if (hostSecret && roomId) {
+      sessionStorage.setItem(`hostSecret:${roomId}`, hostSecret);
+    }
+  }, [hostSecret, roomId]);
 
   // Apply remote video change to local state.
   useEffect(() => {
@@ -39,12 +52,16 @@ export default function Room() {
   const handleAddVideo = (newVideoId) => {
     setPlaylist((prev) => (prev.includes(newVideoId) ? prev : [...prev, newVideoId]));
     setVideoId(newVideoId);
-    sendVideoAction('change_video', 0, newVideoId);
+    if (isHost) {
+      sendVideoAction('change_video', 0, newVideoId);
+    }
   };
 
   const handleSelectVideo = (id) => {
     setVideoId(id);
-    sendVideoAction('change_video', 0, id);
+    if (isHost) {
+      sendVideoAction('change_video', 0, id);
+    }
   };
 
   const viewerCount = useMemo(() => {
@@ -66,14 +83,15 @@ export default function Room() {
   return (
     <div className="room-shell">
       <header className="nav room-nav">
-        <div className="brand">
+        <Link className="brand" to="/">
           <img className="brand-logo" src="/logo.png" alt="WatchTogether logo" />
           <span>WatchTogether</span>
-        </div>
+        </Link>
         <div className="room-actions">
           <div className="pill neutral soft">
             <span className="dot live" /> {viewerCount} watching
           </div>
+          <div className="pill neutral">{isHost ? 'Host' : 'Viewer'}</div>
           <button className="pill secondary" onClick={handleShare}>
             {shareCopied ? 'Link Copied' : 'Share Room'}
           </button>
@@ -90,8 +108,11 @@ export default function Room() {
               <VideoPlayer
                 videoId={videoId}
                 remoteSync={remoteSync}
-                onAction={(action, time, vid) => sendVideoAction(action, time, vid || videoId)}
+                onAction={(action, time, vid) => {
+                  sendVideoAction(action, time, vid || videoId);
+                }}
                 onVideoIdChange={setVideoId}
+                isHost={isHost}
               />
             </div>
           </div>

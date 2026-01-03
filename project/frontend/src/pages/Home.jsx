@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { fetchCurrentUser, signOut } from '../utils/auth';
 
 const API_BASE = 'http://localhost:4000/api/rooms';
 const featureList = [
@@ -25,10 +26,35 @@ export default function Home() {
   const [userName, setUserName] = useState('');
   const [roomName, setRoomName] = useState('');
   const [roomIdToJoin, setRoomIdToJoin] = useState('');
+  const [storedUser, setStoredUser] = useState(null);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
 
-  const ensureUser = () => (userName.trim() ? userName.trim() : 'Guest');
+  useEffect(() => {
+    let active = true;
+    fetchCurrentUser()
+      .then((user) => {
+        if (active) setStoredUser(user);
+      })
+      .catch(() => {
+        if (active) setStoredUser(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const displayName = storedUser?.name?.trim() || userName.trim() || 'Guest';
+
+  const handleDisconnect = async () => {
+    try {
+      await signOut();
+      setStoredUser(null);
+      setUserName('');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   const handleCreate = async () => {
     try {
@@ -36,11 +62,15 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: roomName || 'My Room', user: ensureUser() })
+        credentials: 'include',
+        body: JSON.stringify({ name: roomName || 'My Room', user: displayName })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      navigate(`/room/${data.id}?user=${encodeURIComponent(ensureUser())}`);
+      if (data.hostSecret) {
+        sessionStorage.setItem(`hostSecret:${data.id}`, data.hostSecret);
+      }
+      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`, { state: { hostSecret: data.hostSecret } });
     } catch (err) {
       setError(err.message);
     }
@@ -53,11 +83,12 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomId: roomIdToJoin.trim(), user: ensureUser() })
+        credentials: 'include',
+        body: JSON.stringify({ roomId: roomIdToJoin.trim(), user: displayName })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      navigate(`/room/${data.id}?user=${encodeURIComponent(ensureUser())}`);
+      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`);
     } catch (err) {
       setError(err.message);
     }
@@ -66,10 +97,10 @@ export default function Home() {
   return (
     <div className="hero-page">
       <header className="nav">
-        <div className="brand">
+        <Link className="brand" to="/">
           <img className="brand-logo" src="/logo.png" alt="WatchTogether logo" />
           <span>WatchTogether</span>
-        </div>
+        </Link>
         <nav className="nav-links">
           <a href="#home">Home</a>
           <a href="#features">Features</a>
@@ -77,8 +108,19 @@ export default function Home() {
           <a href="#pricing">Pricing</a>
         </nav>
         <div className="nav-actions">
-          <button className="ghost">Sign In</button>
-          <button className="pill primary">Get Started</button>
+          {storedUser ? (
+            <div className="nav-user">
+              <div className="pill neutral user-chip">{storedUser.name}</div>
+              <button className="pill secondary" type="button" onClick={handleDisconnect}>
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <>
+              <Link className="ghost" to="/sign-in">Sign In</Link>
+              <Link className="pill primary" to="/get-started">Get Started</Link>
+            </>
+          )}
         </div>
       </header>
 
@@ -104,10 +146,20 @@ export default function Home() {
           </div>
 
           <div className="form-panel">
-            <div className="input-group">
-              <label>Your name</label>
-              <input value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="Guest" />
-            </div>
+            {storedUser ? (
+              <div className="input-group">
+                <label>Signed in as</label>
+                <div className="signed-in">
+                  <span>{storedUser.name}</span>
+                  <Link className="ghost" to="/sign-in">Change</Link>
+                </div>
+              </div>
+            ) : (
+              <div className="input-group">
+                <label>Your name</label>
+                <input value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="Guest" />
+              </div>
+            )}
             <div className="input-group">
               <label>Room name (for Create)</label>
               <input value={roomName} onChange={(e) => setRoomName(e.target.value)} placeholder="My Room" />

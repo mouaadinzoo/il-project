@@ -1,43 +1,57 @@
-# WatchTogether MVP (Conversation Summary)
+# WatchTogether
 
-This repo contains a minimal WatchTogether app built during this session.
+WatchTogether est un projet React + Node.js + Socket.io avec synchronisation video temps reel, chat et maintenant une regie video server-authoritative.
 
-## Stack
-- Backend: Node.js, Express, Socket.io, CORS. In-memory room store (no persistence yet).
-- Frontend: React + Vite, React Router, Socket.io client, React-YouTube.
+## Stack reelle du depot
 
-## Ports & Linking
-- Backend runs on `http://localhost:4000`.
-- Frontend (Vite) runs on `http://localhost:5173` and calls `http://localhost:4000/api/rooms` for create/join, and connects to Socket.io at `http://localhost:4000`.
+- Frontend: React + Vite
+- Backend: Node.js + Express
+- Temps reel: Socket.io
+- Persistance actuelle du depot: SQLite via `better-sqlite3`
 
-## Features Implemented
-- Create/Join rooms via REST endpoints (`/api/rooms/create`, `/api/rooms/join`).
-- Real-time sync (play/pause/seek/change video) via Socket.io.
-- Live chat via Socket.io.
-- Editable room title (pen icon inline edit).
-- Playlist input (YouTube URL or ID) and selection.
-- Design:
-  - Marketing home page with hero, features grid, 3-step flow, CTA, footer in purple theme.
-  - Room page with cinematic layout (big player, meta bar, sticky chat).
-  - Logo integrated in nav/footer/room header; logo file served at `/logo.png` from `frontend/public`.
+Note:
 
-## Notes & Limitations
-- Data is **not persisted**: rooms and chat live in memory; restarting the backend clears state.
-- Socket join populates live viewers count from active chat users; no auth.
+- La demande produit mentionnait MySQL, mais le code present dans ce depot utilise SQLite. L'implementation de la regie a donc ete integree de maniere incrementale sur cette base reelle.
 
-## Running Locally
-```bash
-# Backend
-cd project/backend
+## Fonctionnalites
+
+- Creation et partage d'un salon
+- Rejoindre un salon
+- Chat temps reel
+- Synchronisation video
+- Regie video avec roles et controle centralise serveur
+
+## Roles
+
+- `director`: cree le salon et pilote la video partagee
+- `participant`: suit l'etat synchronise et garde acces au chat
+- `moderator`: role prevu cote backend pour une extension future
+
+## Lancement local
+
+Backend:
+
+```powershell
+cd "project/backend"
 npm install
-npm run dev   # listens on 4000
-
-# Frontend (in another terminal)
-cd project/frontend
-npm install
-npm run dev   # serves on 5173
+npm run dev
 ```
 
-## Assets
-- Place your logo at `project/frontend/public/logo.png` (currently copied from `lego site.png`).
+Frontend:
 
+```powershell
+cd "project/frontend"
+npm install
+npm run dev
+```
+
+Application:
+
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:4000`
+
+## Documentation regie
+
+Voir:
+
+- `project/docs/regie-video.md`

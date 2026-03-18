@@ -1,13 +1,22 @@
-﻿# React starter
+# il-project
 
-## Setup
+Le projet principal se trouve dans `project/`.
 
-```sh
+Documentation:
+
+- Vue d'ensemble: `project/README.md`
+- Regie video: `project/docs/regie-video.md`
+
+Lancement rapide:
+
+```powershell
+cd "project/backend"
 npm install
 npm run dev
 ```
 
-## Scripts
-- `npm run dev` - start dev server
-- `npm run build` - production build
-- `npm run preview` - preview production build
+```powershell
+cd "project/frontend"
+npm install
+npm run dev
+```

@@ -1,11 +1,22 @@
-// Simple room-scoped chat relay.
 const { recordMessage } = require('../utils/roomsStore');
 
 module.exports = (io, socket) => {
-  socket.on('chat_message', ({ roomId, user, text }) => {
-    if (!roomId || !text) return;
-    const message = { roomId, user: user || 'Guest', text, timestamp: Date.now() };
-    recordMessage(roomId, null, message.user, text);
+  socket.on('chat_message', ({ text } = {}) => {
+    const roomId = socket.data?.roomId;
+    const userId = socket.data?.userId || null;
+    const userName = socket.data?.userName || 'Guest';
+    const content = String(text || '').trim();
+
+    if (!roomId || !content) return;
+
+    const message = {
+      roomId,
+      user: userName,
+      text: content,
+      timestamp: Date.now()
+    };
+
+    recordMessage(roomId, userId, userName, content);
     io.to(roomId).emit('chat_message', message);
   });
 };

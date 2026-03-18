@@ -79,6 +79,19 @@ db.exec(`
     UNIQUE (room_id, video_id),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS room_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    actor_user_id INTEGER,
+    actor_name TEXT NOT NULL,
+    actor_role TEXT NOT NULL,
+    action TEXT NOT NULL,
+    meta TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
 `);
 
 module.exports = { db };

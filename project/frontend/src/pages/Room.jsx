@@ -1,32 +1,60 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import VideoPlayer from '../components/VideoPlayer';
 import Playlist from '../components/Playlist';
 import Chat from '../components/Chat';
 import useSocket from '../hooks/useSocket';
 
-// Main room view combines player, playlist, and chat.
+const ROLE_LABELS = {
+  director: 'Realisateur',
+  moderator: 'Moderateur',
+  participant: 'Participant'
+};
+
+const ACTION_LABELS = {
+  room_created: 'Salon cree',
+  play_video: 'Lecture lancee',
+  pause_video: 'Lecture mise en pause',
+  seek_video: 'Position de lecture mise a jour',
+  select_video: 'Video On-Air changee'
+};
+
 export default function Room() {
   const { roomId } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const user = useMemo(() => searchParams.get('user') || 'Guest', [searchParams]);
   const [shareCopied, setShareCopied] = useState(false);
-  const [roomTitle, setRoomTitle] = useState('WatchTogether Room');
-  const [editingTitle, setEditingTitle] = useState(false);
 
-  const [videoId, setVideoId] = useState('dQw4w9WgXcQ');
-  const [playlist, setPlaylist] = useState(['dQw4w9WgXcQ']);
-  const hostSecret = useMemo(() => {
+  const user = useMemo(() => searchParams.get('user') || 'Guest', [searchParams]);
+  const userId = location.state?.userId || null;
+  const controllerToken = useMemo(() => {
+    if (location.state?.controllerToken) return location.state.controllerToken;
     if (location.state?.hostSecret) return location.state.hostSecret;
-    if (roomId) return sessionStorage.getItem(`hostSecret:${roomId}`);
-    return null;
+    if (!roomId) return null;
+    return (
+      sessionStorage.getItem(`controllerToken:${roomId}`) ||
+      sessionStorage.getItem(`hostSecret:${roomId}`) ||
+      null
+    );
   }, [location.state, roomId]);
-  const { socketConnected, remoteSync, messages, isHost, sendVideoAction, sendChatMessage } = useSocket({
+
+  const {
+    socketConnected,
+    roomState,
+    messages,
+    role,
+    canControlVideo,
+    permissionError,
+    roomError,
+    clearPermissionError,
+    sendVideoCommand,
+    sendChatMessage
+  } = useSocket({
     roomId,
     user,
-    hostSecret
+    userId,
+    controllerToken
   });
 
   useEffect(() => {
@@ -34,50 +62,50 @@ export default function Room() {
   }, [roomId, navigate]);
 
   useEffect(() => {
-    if (hostSecret && roomId) {
-      sessionStorage.setItem(`hostSecret:${roomId}`, hostSecret);
-    }
-  }, [hostSecret, roomId]);
+    if (!controllerToken || !roomId) return;
+    sessionStorage.setItem(`controllerToken:${roomId}`, controllerToken);
+  }, [controllerToken, roomId]);
 
-  // Apply remote video change to local state.
-  useEffect(() => {
-    if (remoteSync?.action === 'change_video' && remoteSync.videoId) {
-      setVideoId(remoteSync.videoId);
-      if (!playlist.includes(remoteSync.videoId)) {
-        setPlaylist((prev) => [...prev, remoteSync.videoId]);
-      }
-    }
-  }, [remoteSync, playlist]);
+  const currentVideoId = roomState?.currentVideoId || 'dQw4w9WgXcQ';
+  const playlist = roomState?.playlist?.length ? roomState.playlist : [currentVideoId];
+  const viewerCount = roomState?.viewerCount ?? 1;
+  const directorName = roomState?.directorName || 'Director';
+  const roomTitle = roomState?.name || 'WatchTogether Room';
+  const participants = roomState?.participants || [];
+  const roleLabel = ROLE_LABELS[role] || ROLE_LABELS.participant;
+  const directorPresenceLabel = useMemo(() => {
+    if (!socketConnected) return 'offline';
+    if (roomState?.directorOnline) return 'online';
+    if (role === 'director') return 'online';
+    if (!roomState) return 'syncing';
+    return 'offline';
+  }, [socketConnected, roomState, role]);
 
-  const handleAddVideo = (newVideoId) => {
-    setPlaylist((prev) => (prev.includes(newVideoId) ? prev : [...prev, newVideoId]));
-    setVideoId(newVideoId);
-    if (isHost) {
-      sendVideoAction('change_video', 0, newVideoId);
-    }
-  };
+  const activityText = useMemo(() => {
+    if (!roomState?.lastAction) return 'Etat synchronise par le serveur.';
+    const actionLabel = ACTION_LABELS[roomState.lastAction] || roomState.lastAction;
+    const actorName = roomState.lastActorName || directorName;
+    return `${actionLabel} par ${actorName}.`;
+  }, [roomState?.lastAction, roomState?.lastActorName, directorName]);
 
-  const handleSelectVideo = (id) => {
-    setVideoId(id);
-    if (isHost) {
-      sendVideoAction('change_video', 0, id);
-    }
-  };
-
-  const viewerCount = useMemo(() => {
-    const users = new Set(messages.map((m) => m.user || 'Guest'));
-    users.add(user);
-    return users.size;
-  }, [messages, user]);
+  const roleHint = canControlVideo
+    ? 'Vos commandes controlent la lecture pour tout le salon.'
+    : 'Vous suivez automatiquement la regie. Le chat reste disponible.';
 
   const handleShare = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
       setShareCopied(true);
-      setTimeout(() => setShareCopied(false), 1800);
+      window.setTimeout(() => setShareCopied(false), 1800);
     } catch (err) {
       console.error('Share failed', err);
     }
+  };
+
+  const handleSelectVideo = (nextVideoId) => {
+    if (!canControlVideo || !nextVideoId) return;
+    clearPermissionError();
+    sendVideoCommand('select_video', { videoId: nextVideoId });
   };
 
   return (
@@ -87,13 +115,20 @@ export default function Room() {
           <img className="brand-logo" src="/logo.png" alt="WatchTogether logo" />
           <span>WatchTogether</span>
         </Link>
+
         <div className="room-actions">
           <div className="pill neutral soft">
             <span className="dot live" /> {viewerCount} watching
           </div>
-          <div className="pill neutral">{isHost ? 'Host' : 'Viewer'}</div>
+          <div className="pill neutral">{roleLabel}</div>
+          <div className="pill neutral soft">
+            Regie: {directorName} {directorPresenceLabel}
+          </div>
+          <div className={`pill neutral soft ${socketConnected ? 'status-connected' : 'status-disconnected'}`}>
+            {socketConnected ? 'Socket online' : 'Socket offline'}
+          </div>
           <button className="pill secondary" onClick={handleShare}>
-            {shareCopied ? 'Link Copied' : 'Share Room'}
+            {shareCopied ? 'Link copied' : 'Share room'}
           </button>
           <button className="pill primary" onClick={() => navigate('/')}>
             Leave
@@ -101,58 +136,69 @@ export default function Room() {
         </div>
       </header>
 
+      {roomError && <div className="room-alert error">Erreur salon: {roomError}</div>}
+      {permissionError && <div className="room-alert warning">{permissionError.message}</div>}
+      <div className="room-alert info">{roleHint}</div>
+
       <div className="room-grid">
         <div className="room-main">
           <div className="video-stage">
             <div className="video-frame">
               <VideoPlayer
-                videoId={videoId}
-                remoteSync={remoteSync}
-                onAction={(action, time, vid) => {
-                  sendVideoAction(action, time, vid || videoId);
-                }}
-                onVideoIdChange={setVideoId}
-                isHost={isHost}
+                videoId={currentVideoId}
+                roomState={roomState}
+                canControlVideo={canControlVideo}
+                onCommand={sendVideoCommand}
               />
             </div>
           </div>
+
           <div className="room-meta">
             <div>
               <p className="muted">Room</p>
-              <div className="room-title-row">
-                {editingTitle ? (
-                  <input
-                    autoFocus
-                    className="room-title-input"
-                    value={roomTitle}
-                    onChange={(e) => setRoomTitle(e.target.value)}
-                    onBlur={() => setEditingTitle(false)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') setEditingTitle(false);
-                      if (e.key === 'Escape') setEditingTitle(false);
-                    }}
-                  />
-                ) : (
-                  <>
-                    <h3 className="room-title-text">{roomTitle}</h3>
-                    <button className="icon-btn" aria-label="Edit room name" onClick={() => setEditingTitle(true)}>
-                      ✏️
-                    </button>
-                  </>
-                )}
-              </div>
+              <h3 className="room-title-text">{roomTitle}</h3>
               <p className="muted small">Room ID: {roomId}</p>
+              <p className="muted small">{activityText}</p>
             </div>
-            <div className="avatar-row">
-              <div className="avatar">{user?.[0] || 'U'}</div>
-              <div className="avatar ghost-avatar">+</div>
+
+            <div className="room-right-meta">
+              <div className="avatar-row">
+                {participants.slice(0, 4).map((member) => (
+                  <div
+                    key={member.socketId}
+                    className={`avatar ${member.role === 'director' ? 'director-avatar' : ''}`}
+                    title={`${member.userName} (${ROLE_LABELS[member.role] || member.role})`}
+                  >
+                    {(member.userName || 'U')[0]}
+                  </div>
+                ))}
+                {participants.length > 4 && <div className="avatar ghost-avatar">+{participants.length - 4}</div>}
+              </div>
+              <div className="participant-list">
+                {participants.map((member) => (
+                  <span
+                    key={`${member.socketId}-label`}
+                    className={`participant-chip ${member.userName === user ? 'participant-chip-active' : ''}`}
+                  >
+                    {member.userName} · {ROLE_LABELS[member.role] || member.role}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
-          <Playlist videos={playlist} onAdd={handleAddVideo} onSelect={handleSelectVideo} currentVideoId={videoId} />
+
+          <Playlist
+            videos={playlist}
+            currentVideoId={currentVideoId}
+            canControl={canControlVideo}
+            controllerName={directorName}
+            onAdd={handleSelectVideo}
+            onSelect={handleSelectVideo}
+          />
         </div>
 
         <div className="room-chat">
-          <Chat user={user} messages={messages} onSend={(text) => sendChatMessage(text)} title="Live Chat" />
+          <Chat user={user} messages={messages} onSend={sendChatMessage} title="Live Chat" />
         </div>
       </div>
     </div>

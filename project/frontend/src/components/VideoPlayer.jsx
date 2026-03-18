@@ -1,150 +1,189 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 
-// Watch-together YouTube player:
-// - HOST is the only one who emits global sync events (play/pause/seek + videoId changes)
-// - VIEWERS never emit global sync events; their local controls only affect themselves
-// - All clients apply server "remoteSync" via ROOM_SYNC-like payloads
-export default function VideoPlayer({
-  videoId,
-  remoteSync, // { action: 'play'|'pause'|'seek'|'video', time?: number, videoId?: string }
-  onAction, // (action, time, videoId) => void
-  onVideoIdChange, // (newVideoId) => void
-  isHost
-}) {
-  const playerRef = useRef(null);
+const PLAYER_STATES = {
+  ENDED: 0,
+  PLAYING: 1,
+  PAUSED: 2
+};
 
-  // Instead of "ignoreNext once", use a short lock window to swallow multiple YT state transitions.
+function safeTime(value) {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function formatTime(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(safeTime(totalSeconds)));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+export default function VideoPlayer({ videoId, roomState, canControlVideo, onCommand }) {
+  const playerRef = useRef(null);
   const ignoreUntilMsRef = useRef(0);
+  const lastObservedRef = useRef({ time: 0, checkedAt: 0 });
+
   const ignoreFor = useCallback((ms) => {
     ignoreUntilMsRef.current = Date.now() + ms;
   }, []);
+
   const isIgnoring = useCallback(() => Date.now() < ignoreUntilMsRef.current, []);
 
-  // Optional: keep last emitted action+time to reduce spam (YT can fire state changes multiple times)
-  const lastEmitRef = useRef({ action: null, tBucket: null, vid: null });
+  const readCurrentTime = useCallback(() => {
+    const player = playerRef.current;
+    if (!player) return 0;
+    return safeTime(player.getCurrentTime?.());
+  }, []);
+
+  const sendCommand = useCallback(
+    (type, payload = {}) => {
+      if (!canControlVideo || !onCommand) return;
+      onCommand(type, payload);
+    },
+    [canControlVideo, onCommand]
+  );
 
   const opts = {
     width: '100%',
     playerVars: {
       autoplay: 0,
-      controls: isHost ? 1 : 0, // viewers cannot interact with controls
-      disablekb: isHost ? 0 : 1
+      controls: canControlVideo ? 1 : 0,
+      disablekb: canControlVideo ? 0 : 1
     }
   };
 
   const handleReady = (event) => {
     playerRef.current = event.target;
+    lastObservedRef.current = {
+      time: safeTime(event.target.getCurrentTime?.()),
+      checkedAt: Date.now()
+    };
   };
 
-  const emitHostAction = useCallback(
-    async (action) => {
-      if (!playerRef.current) return;
-      if (!isHost) return;
-
-      const t = await playerRef.current.getCurrentTime?.();
-      const time = typeof t === 'number' && Number.isFinite(t) ? t : 0;
-
-      // de-dupe: bucket time to ~250ms and same action/video
-      const tBucket = Math.round(time * 4) / 4;
-      const last = lastEmitRef.current;
-      if (last.action === action && last.tBucket === tBucket && last.vid === videoId) return;
-
-      lastEmitRef.current = { action, tBucket, vid: videoId };
-      onAction(action, time, videoId);
-    },
-    [isHost, onAction, videoId]
-  );
-
-  // When the local player changes state:
-  // - If we're currently applying a remote sync, ignore
-  // - If VIEWER, do not emit anything
-  // - If HOST, emit play/pause
   const handleStateChange = (event) => {
-    if (!playerRef.current) return;
-    if (isIgnoring()) return;
+    if (!canControlVideo || isIgnoring()) return;
 
-    // Only host controls global state
-    if (!isHost) return;
+    const currentTime = readCurrentTime();
+    if (event.data === PLAYER_STATES.PLAYING) {
+      sendCommand('play_video', { time: currentTime });
+    }
 
-    // YT state codes:
-    // -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
-    if (event.data === 1) emitHostAction('play');
-    if (event.data === 2) emitHostAction('pause');
+    if (event.data === PLAYER_STATES.PAUSED || event.data === PLAYER_STATES.ENDED) {
+      sendCommand('pause_video', { time: currentTime });
+    }
   };
 
-  // Apply remote sync actions (from server) to the player.
-  // IMPORTANT:
-  // - This is the only place viewers get synchronized.
-  // - Viewers can still play/pause locally, but that does NOT emit to server.
   useEffect(() => {
     const player = playerRef.current;
-    if (!remoteSync || !player) return;
+    if (!player || !roomState) return;
 
-    // If remote sync changes videoId, update it and exit.
-    // The parent component should re-render YouTube with new videoId.
-    if (remoteSync.videoId && remoteSync.videoId !== videoId) {
-      // Prevent echo/extra state changes while switching video
-      ignoreFor(800);
-      onVideoIdChange(remoteSync.videoId);
-      return;
-    }
+    const targetTime = safeTime(roomState.currentTime);
+    const currentTime = readCurrentTime();
+    const drift = Math.abs(currentTime - targetTime);
+    const playerState = player.getPlayerState?.();
 
-    // Swallow the burst of YT state changes triggered by seek/play/pause.
-    // 400-600ms is usually enough.
-    ignoreFor(600);
-
-    const safeTime =
-      Number.isFinite(remoteSync.time) && typeof remoteSync.time === 'number' ? remoteSync.time : null;
-
-    if (remoteSync.action === 'seek') {
-      player.seekTo(safeTime ?? 0, true);
-      return;
-    }
-
-    if (remoteSync.action === 'play') {
-      if (safeTime !== null) player.seekTo(safeTime, true);
-      player.playVideo();
-      return;
-    }
-
-    if (remoteSync.action === 'pause') {
-      // Prefer: seek first (if provided), then pause ONCE.
-      if (safeTime !== null) player.seekTo(safeTime, true);
-      player.pauseVideo();
-      return;
-    }
-
-    // Optional: if you send a "video" action explicitly
-    if (remoteSync.action === 'video') {
-      if (remoteSync.videoId && remoteSync.videoId !== videoId) {
-        ignoreFor(800);
-        onVideoIdChange(remoteSync.videoId);
+    if (roomState.playbackStatus === 'playing') {
+      if (drift > 1.25) {
+        ignoreFor(700);
+        player.seekTo(targetTime, true);
       }
+      if (playerState !== PLAYER_STATES.PLAYING) {
+        ignoreFor(700);
+        player.playVideo();
+      }
+      return;
     }
-  }, [remoteSync, videoId, onVideoIdChange, ignoreFor]);
+
+    if (drift > 0.5) {
+      ignoreFor(700);
+      player.seekTo(targetTime, true);
+    }
+    if (playerState !== PLAYER_STATES.PAUSED) {
+      ignoreFor(700);
+      player.pauseVideo();
+    }
+  }, [
+    roomState?.currentTime,
+    roomState?.playbackStatus,
+    roomState?.updatedAt,
+    roomState?.currentVideoId,
+    readCurrentTime,
+    ignoreFor
+  ]);
+
+  useEffect(() => {
+    if (!canControlVideo) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      const player = playerRef.current;
+      if (!player || isIgnoring()) return;
+
+      const playerState = player.getPlayerState?.();
+      const currentTime = readCurrentTime();
+      const now = Date.now();
+
+      if (playerState !== PLAYER_STATES.PLAYING && playerState !== PLAYER_STATES.PAUSED) {
+        lastObservedRef.current = { time: currentTime, checkedAt: now };
+        return;
+      }
+
+      const lastObserved = lastObservedRef.current;
+      const expectedTime =
+        lastObserved.time +
+        (playerState === PLAYER_STATES.PLAYING ? (now - lastObserved.checkedAt) / 1000 : 0);
+
+      if (Math.abs(currentTime - expectedTime) > 2.5) {
+        sendCommand('seek_video', { time: currentTime });
+      }
+
+      lastObservedRef.current = { time: currentTime, checkedAt: now };
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [canControlVideo, isIgnoring, readCurrentTime, sendCommand]);
 
   return (
-    <div className="card">
-      <h2>Video</h2>
-      <div style={{ position: 'relative' }}>
-        <YouTube videoId={videoId} opts={opts} onReady={handleReady} onStateChange={handleStateChange} />
-        {!isHost && (
-          <div
-            aria-hidden="true"
-            style={{
-              position: 'absolute',
-              inset: 0,
-              cursor: 'not-allowed'
-            }}
-          />
-        )}
+    <div className="card video-card">
+      <div className="video-card-header">
+        <div>
+          <h2>Video On-Air</h2>
+          <p className="muted small">
+            Statut: {roomState?.playbackStatus || 'paused'} · Temps: {formatTime(roomState?.currentTime)}
+          </p>
+        </div>
+        <div className={`role-chip ${canControlVideo ? 'role-chip-control' : 'role-chip-follow'}`}>
+          {canControlVideo ? 'Vous pilotez la regie' : 'Mode suivi'}
+        </div>
       </div>
-      {!isHost && (
-        <p style={{ marginTop: 8, opacity: 0.75 }}>
-          Viewer mode: your play/pause/seek are local only. Only the host syncs everyone.
-        </p>
-      )}
+
+      <div className="video-player-shell">
+        <YouTube videoId={videoId} opts={opts} onReady={handleReady} onStateChange={handleStateChange} />
+        {!canControlVideo && <div className="video-guard" aria-hidden="true" />}
+      </div>
+
+      <div className="video-control-bar">
+        <button disabled={!canControlVideo} onClick={() => sendCommand('play_video', { time: readCurrentTime() })}>
+          Play
+        </button>
+        <button disabled={!canControlVideo} onClick={() => sendCommand('pause_video', { time: readCurrentTime() })}>
+          Pause
+        </button>
+        <button
+          disabled={!canControlVideo}
+          onClick={() => sendCommand('seek_video', { time: Math.max(0, readCurrentTime() - 10) })}
+        >
+          -10s
+        </button>
+        <button disabled={!canControlVideo} onClick={() => sendCommand('seek_video', { time: readCurrentTime() + 10 })}>
+          +10s
+        </button>
+      </div>
+
+      <p className="video-note">
+        {canControlVideo
+          ? 'Play, pause, changement de video et seek sont valides par le serveur avant diffusion.'
+          : 'La video suit le snapshot serveur. Les commandes globales sont reservees au realisateur.'}
+      </p>
     </div>
   );
 }

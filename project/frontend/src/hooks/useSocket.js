@@ -3,53 +3,98 @@ import { io } from 'socket.io-client';
 
 const SOCKET_URL = 'http://localhost:4000';
 
-// Manages socket connection + exposes helpers for video + chat.
-export default function useSocket({ roomId, user, hostSecret }) {
+export default function useSocket({ roomId, user, userId = null, controllerToken = null }) {
   const socketRef = useRef(null);
   const [socketConnected, setSocketConnected] = useState(false);
-  const [remoteSync, setRemoteSync] = useState(null);
+  const [roomState, setRoomState] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [isHost, setIsHost] = useState(() => Boolean(hostSecret));
-  const [hostName, setHostName] = useState(null);
+  const [role, setRole] = useState(() => (controllerToken ? 'director' : 'participant'));
+  const [permissionError, setPermissionError] = useState(null);
+  const [roomError, setRoomError] = useState(null);
 
   useEffect(() => {
-    if (!roomId) return;
-    const socket = io(SOCKET_URL, { transports: ['websocket'] });
+    if (!permissionError) return undefined;
+    const timeoutId = window.setTimeout(() => setPermissionError(null), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [permissionError]);
+
+  useEffect(() => {
+    if (!roomId) return undefined;
+
+    const socket = io(SOCKET_URL, {
+      transports: ['websocket'],
+      withCredentials: true
+    });
+
     socketRef.current = socket;
+    setMessages([]);
+    setRoomError(null);
 
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
 
-    socket.emit('join_room', { roomId, user, hostSecret });
-
-    socket.on('role_assigned', ({ isHost: assignedHost, host }) => {
-      setIsHost(Boolean(assignedHost));
-      if (host) setHostName(host);
+    socket.on('role_assigned', ({ role: assignedRole }) => {
+      setRole(assignedRole || 'participant');
     });
+
+    socket.on('room_state', (snapshot) => {
+      setRoomState(snapshot);
+    });
+
+    socket.on('state_changed', ({ state }) => {
+      if (state) setRoomState(state);
+    });
+
+    socket.on('permission_denied', (payload) => {
+      setPermissionError(payload);
+    });
+
+    socket.on('room_error', (payload) => {
+      setRoomError(payload?.error || 'Unexpected room error.');
+    });
+
     socket.on('chat_history', (history) => {
       if (Array.isArray(history)) setMessages(history);
     });
-    socket.on('video_action', (payload) => {
-      setRemoteSync(payload);
+
+    socket.on('chat_message', (message) => {
+      setMessages((prev) => [...prev, message]);
     });
-    socket.on('chat_message', (message) => setMessages((prev) => [...prev, message]));
+
+    socket.emit('join_room', {
+      roomId,
+      user,
+      userId,
+      controllerToken
+    });
 
     return () => {
-      setIsHost(false);
-      setHostName(null);
+      setSocketConnected(false);
+      setRole(controllerToken ? 'director' : 'participant');
       socket.disconnect();
     };
-  }, [roomId, user, hostSecret]);
+  }, [roomId, user, userId, controllerToken]);
 
-  const sendVideoAction = (action, time, videoId) => {
+  const sendVideoCommand = (eventName, payload = {}) => {
     if (!socketRef.current) return;
-    socketRef.current.emit('video_action', { roomId, user, action, time, videoId });
+    socketRef.current.emit(eventName, payload);
   };
 
   const sendChatMessage = (text) => {
     if (!socketRef.current || !text) return;
-    socketRef.current.emit('chat_message', { roomId, user, text });
+    socketRef.current.emit('chat_message', { text });
   };
 
-  return { socketConnected, remoteSync, messages, isHost, hostName, sendVideoAction, sendChatMessage };
+  return {
+    socketConnected,
+    roomState,
+    messages,
+    role,
+    canControlVideo: role === 'director',
+    permissionError,
+    roomError,
+    clearPermissionError: () => setPermissionError(null),
+    sendVideoCommand,
+    sendChatMessage
+  };
 }

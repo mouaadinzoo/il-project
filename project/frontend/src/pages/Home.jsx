@@ -67,10 +67,16 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      if (data.hostSecret) {
-        sessionStorage.setItem(`hostSecret:${data.id}`, data.hostSecret);
+      const controllerToken = data.controllerToken || data.hostSecret || null;
+      if (controllerToken) {
+        sessionStorage.setItem(`controllerToken:${data.id}`, controllerToken);
       }
-      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`, { state: { hostSecret: data.hostSecret } });
+      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`, {
+        state: {
+          controllerToken,
+          userId: storedUser?.id || null
+        }
+      });
     } catch (err) {
       setError(err.message);
     }
@@ -88,7 +94,11 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`);
+      navigate(`/room/${data.id}?user=${encodeURIComponent(displayName)}`, {
+        state: {
+          userId: storedUser?.id || null
+        }
+      });
     } catch (err) {
       setError(err.message);
     }

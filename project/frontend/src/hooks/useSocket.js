@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
+import { getRolePermissions } from '../utils/roomRoles';
 
 const SOCKET_URL = 'http://localhost:4000';
 
 export default function useSocket({ roomId, user, userId = null, controllerToken = null }) {
+  const initialRole = controllerToken ? 'director' : 'participant';
   const socketRef = useRef(null);
   const [socketConnected, setSocketConnected] = useState(false);
   const [roomState, setRoomState] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [role, setRole] = useState(() => (controllerToken ? 'director' : 'participant'));
+  const [reactions, setReactions] = useState([]);
+  const [role, setRole] = useState(() => initialRole);
+  const [permissions, setPermissions] = useState(() => getRolePermissions(initialRole));
   const [permissionError, setPermissionError] = useState(null);
   const [roomError, setRoomError] = useState(null);
 
@@ -33,8 +37,10 @@ export default function useSocket({ roomId, user, userId = null, controllerToken
     socket.on('connect', () => setSocketConnected(true));
     socket.on('disconnect', () => setSocketConnected(false));
 
-    socket.on('role_assigned', ({ role: assignedRole }) => {
-      setRole(assignedRole || 'participant');
+    socket.on('role_assigned', ({ role: assignedRole, permissions: nextPermissions }) => {
+      const resolvedRole = assignedRole || 'participant';
+      setRole(resolvedRole);
+      setPermissions(nextPermissions || getRolePermissions(resolvedRole));
     });
 
     socket.on('room_state', (snapshot) => {
@@ -61,6 +67,23 @@ export default function useSocket({ roomId, user, userId = null, controllerToken
       setMessages((prev) => [...prev, message]);
     });
 
+    socket.on('room_reaction', (reaction) => {
+      if (!reaction?.emoji) return;
+      const reactionId = reaction.id || `${reaction.emoji}-${Date.now()}-${Math.random()}`;
+      setReactions((prev) => [
+        ...prev,
+        {
+          ...reaction,
+          id: reactionId,
+          left: 18 + Math.random() * 64
+        }
+      ]);
+
+      window.setTimeout(() => {
+        setReactions((prev) => prev.filter((item) => item.id !== reactionId));
+      }, 2600);
+    });
+
     socket.emit('join_room', {
       roomId,
       user,
@@ -70,10 +93,12 @@ export default function useSocket({ roomId, user, userId = null, controllerToken
 
     return () => {
       setSocketConnected(false);
-      setRole(controllerToken ? 'director' : 'participant');
+      setRole(initialRole);
+      setPermissions(getRolePermissions(initialRole));
+      setReactions([]);
       socket.disconnect();
     };
-  }, [roomId, user, userId, controllerToken]);
+  }, [roomId, user, userId, controllerToken, initialRole]);
 
   const sendVideoCommand = (eventName, payload = {}) => {
     if (!socketRef.current) return;
@@ -85,16 +110,36 @@ export default function useSocket({ roomId, user, userId = null, controllerToken
     socketRef.current.emit('chat_message', { text });
   };
 
+  const sendReaction = (emoji) => {
+    if (!socketRef.current || !emoji) return;
+    socketRef.current.emit('room_reaction', { emoji });
+  };
+
+  const assignRole = (targetSocketId, nextRole) => {
+    if (!socketRef.current || !targetSocketId || !nextRole) return;
+    socketRef.current.emit('assign_role', {
+      targetSocketId,
+      role: nextRole
+    });
+  };
+
   return {
     socketConnected,
     roomState,
     messages,
+    reactions,
     role,
-    canControlVideo: role === 'director',
+    permissions,
+    canControlVideo: permissions.canControlPlayback || permissions.canSelectVideo,
+    canControlPlayback: permissions.canControlPlayback,
+    canSelectVideo: permissions.canSelectVideo,
+    canManageRoles: permissions.canManageRoles,
     permissionError,
     roomError,
     clearPermissionError: () => setPermissionError(null),
     sendVideoCommand,
-    sendChatMessage
+    sendChatMessage,
+    sendReaction,
+    assignRole
   };
 }

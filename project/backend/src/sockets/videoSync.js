@@ -1,7 +1,7 @@
 const { getRoom, applyRoomCommand } = require('../utils/roomsStore');
 const {
   buildPermissionDeniedPayload,
-  canControlRoom,
+  canControlAction,
   resolveRoomRole
 } = require('../utils/roomPermissions');
 
@@ -18,7 +18,7 @@ function handleControlledCommand(io, socket, action, payload = {}) {
   const role = resolveRoomRole(room, { userId, userName, controllerToken });
   socket.data.role = role;
 
-  if (!canControlRoom(role)) {
+  if (!canControlAction(role, action)) {
     socket.emit('permission_denied', buildPermissionDeniedPayload(action, role));
     return;
   }

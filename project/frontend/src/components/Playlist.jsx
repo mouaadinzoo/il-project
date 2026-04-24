@@ -10,16 +10,17 @@ function parseVideoId(value) {
 
 export default function Playlist({
   videos,
+  videoTitles = {},
   onAdd,
   onSelect,
   currentVideoId,
-  canControl,
+  canSelectVideo,
   controllerName
 }) {
   const [input, setInput] = useState('');
 
   const handleAdd = () => {
-    if (!canControl || !input.trim()) return;
+    if (!canSelectVideo || !input.trim()) return;
     const nextVideoId = parseVideoId(input);
     if (!nextVideoId) return;
     onAdd(nextVideoId);
@@ -32,13 +33,13 @@ export default function Playlist({
         <div>
           <h2>Playlist</h2>
           <p className="muted small">
-            {canControl
+            {canSelectVideo
               ? 'Ajouter une video la met immediatement On-Air.'
-              : `${controllerName || 'Le realisateur'} est le seul a pouvoir changer la video globale.`}
+              : `${controllerName || 'La regie'} gere le changement de video globale.`}
           </p>
         </div>
-        <div className={`role-chip ${canControl ? 'role-chip-control' : 'role-chip-follow'}`}>
-          {canControl ? 'Controle actif' : 'Lecture seule'}
+        <div className={`role-chip ${canSelectVideo ? 'role-chip-control' : 'role-chip-follow'}`}>
+          {canSelectVideo ? 'Selection video' : 'Lecture seule'}
         </div>
       </div>
 
@@ -47,27 +48,34 @@ export default function Playlist({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="YouTube URL or ID"
-          disabled={!canControl}
+          disabled={!canSelectVideo}
         />
-        <button onClick={handleAdd} disabled={!canControl}>
+        <button onClick={handleAdd} disabled={!canSelectVideo}>
           Set On-Air
         </button>
       </div>
 
       <ul className="playlist">
-        {videos.map((video) => (
-          <li key={video} className={video === currentVideoId ? 'active' : ''}>
-            <button
-              type="button"
-              className="playlist-item-btn"
-              disabled={!canControl}
-              onClick={() => onSelect(video)}
-            >
-              <span>{video}</span>
-              {video === currentVideoId && <span className="playlist-tag">On-Air</span>}
-            </button>
-          </li>
-        ))}
+        {videos.map((video) => {
+          const title = videoTitles[video] || video;
+
+          return (
+            <li key={video} className={video === currentVideoId ? 'active' : ''}>
+              <button
+                type="button"
+                className="playlist-item-btn"
+                disabled={!canSelectVideo}
+                onClick={() => onSelect(video)}
+              >
+                <span className="playlist-video-text">
+                  <span className="playlist-video-title">{title}</span>
+                  <span className="playlist-video-id">{video}</span>
+                </span>
+                {video === currentVideoId && <span className="playlist-tag">On-Air</span>}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

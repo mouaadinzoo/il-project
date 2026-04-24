@@ -4,20 +4,23 @@ import VideoPlayer from '../components/VideoPlayer';
 import Playlist from '../components/Playlist';
 import Chat from '../components/Chat';
 import useSocket from '../hooks/useSocket';
-
-const ROLE_LABELS = {
-  director: 'Realisateur',
-  moderator: 'Moderateur',
-  participant: 'Participant'
-};
+import {
+  ROLE_DESCRIPTIONS,
+  ROLE_LABELS,
+  ROLE_OPTIONS,
+  getRoleHint
+} from '../utils/roomRoles';
 
 const ACTION_LABELS = {
   room_created: 'Salon cree',
+  assign_role: 'Role mis a jour',
   play_video: 'Lecture lancee',
   pause_video: 'Lecture mise en pause',
   seek_video: 'Position de lecture mise a jour',
   select_video: 'Video On-Air changee'
 };
+
+const LIVE_REACTIONS = ['❤️', '😂', '🔥', '👏'];
 
 export default function Room() {
   const { roomId } = useParams();
@@ -25,6 +28,8 @@ export default function Room() {
   const navigate = useNavigate();
   const location = useLocation();
   const [shareCopied, setShareCopied] = useState(false);
+  const [roomIdCopied, setRoomIdCopied] = useState(false);
+  const [videoTitles, setVideoTitles] = useState({});
 
   const user = useMemo(() => searchParams.get('user') || 'Guest', [searchParams]);
   const userId = location.state?.userId || null;
@@ -43,13 +48,18 @@ export default function Room() {
     socketConnected,
     roomState,
     messages,
+    reactions,
     role,
-    canControlVideo,
+    canControlPlayback,
+    canSelectVideo,
+    canManageRoles,
     permissionError,
     roomError,
     clearPermissionError,
     sendVideoCommand,
-    sendChatMessage
+    sendChatMessage,
+    sendReaction,
+    assignRole
   } = useSocket({
     roomId,
     user,
@@ -66,7 +76,7 @@ export default function Room() {
     sessionStorage.setItem(`controllerToken:${roomId}`, controllerToken);
   }, [controllerToken, roomId]);
 
-  const currentVideoId = roomState?.currentVideoId || 'dQw4w9WgXcQ';
+  const currentVideoId = roomState?.currentVideoId || 'M7lc1UVf-VE';
   const playlist = roomState?.playlist?.length ? roomState.playlist : [currentVideoId];
   const viewerCount = roomState?.viewerCount ?? 1;
   const directorName = roomState?.directorName || 'Director';
@@ -88,9 +98,44 @@ export default function Room() {
     return `${actionLabel} par ${actorName}.`;
   }, [roomState?.lastAction, roomState?.lastActorName, directorName]);
 
-  const roleHint = canControlVideo
-    ? 'Vos commandes controlent la lecture pour tout le salon.'
-    : 'Vous suivez automatiquement la regie. Le chat reste disponible.';
+  const roleHint = useMemo(() => getRoleHint(role), [role]);
+
+  useEffect(() => {
+    const missingVideoIds = playlist.filter((videoId) => videoId && !videoTitles[videoId]);
+    if (!missingVideoIds.length) return undefined;
+
+    const controller = new AbortController();
+
+    missingVideoIds.forEach(async (videoId) => {
+      try {
+        const response = await fetch(
+          `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(
+            `https://www.youtube.com/watch?v=${videoId}`
+          )}`,
+          { signal: controller.signal }
+        );
+
+        if (!response.ok) throw new Error('Video title unavailable');
+        const data = await response.json();
+        const title = String(data.title || '').trim();
+        if (!title) return;
+
+        setVideoTitles((currentTitles) => ({
+          ...currentTitles,
+          [videoId]: title
+        }));
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setVideoTitles((currentTitles) => ({
+            ...currentTitles,
+            [videoId]: videoId
+          }));
+        }
+      }
+    });
+
+    return () => controller.abort();
+  }, [playlist, videoTitles]);
 
   const handleShare = async () => {
     try {
@@ -102,10 +147,28 @@ export default function Room() {
     }
   };
 
+  const handleCopyRoomId = async () => {
+    if (!roomId) return;
+
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setRoomIdCopied(true);
+      window.setTimeout(() => setRoomIdCopied(false), 1800);
+    } catch (err) {
+      console.error('Copy room ID failed', err);
+    }
+  };
+
   const handleSelectVideo = (nextVideoId) => {
-    if (!canControlVideo || !nextVideoId) return;
+    if (!canSelectVideo || !nextVideoId) return;
     clearPermissionError();
     sendVideoCommand('select_video', { videoId: nextVideoId });
+  };
+
+  const handleRoleChange = (targetSocketId, nextRole) => {
+    if (!canManageRoles || !targetSocketId || !nextRole) return;
+    clearPermissionError();
+    assignRole(targetSocketId, nextRole);
   };
 
   return (
@@ -130,6 +193,9 @@ export default function Room() {
           <button className="pill secondary" onClick={handleShare}>
             {shareCopied ? 'Link copied' : 'Share room'}
           </button>
+          <button className="pill secondary" onClick={handleCopyRoomId}>
+            {roomIdCopied ? 'ID copied' : 'Copy ID'}
+          </button>
           <button className="pill primary" onClick={() => navigate('/')}>
             Leave
           </button>
@@ -143,13 +209,40 @@ export default function Room() {
       <div className="room-grid">
         <div className="room-main">
           <div className="video-stage">
+            <div className="reaction-layer" aria-live="polite">
+              {reactions.map((reaction) => (
+                <div
+                  key={reaction.id}
+                  className="floating-reaction"
+                  style={{ left: `${reaction.left}%` }}
+                  title={`${reaction.user || 'Guest'}: ${reaction.emoji}`}
+                >
+                  <span>{reaction.emoji}</span>
+                  <small>{reaction.user || 'Guest'}</small>
+                </div>
+              ))}
+            </div>
             <div className="video-frame">
               <VideoPlayer
                 videoId={currentVideoId}
+                videoTitle={videoTitles[currentVideoId]}
                 roomState={roomState}
-                canControlVideo={canControlVideo}
+                canControlPlayback={canControlPlayback}
                 onCommand={sendVideoCommand}
               />
+            </div>
+            <div className="reaction-bar" aria-label="Live reactions">
+              {LIVE_REACTIONS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  className="reaction-button"
+                  onClick={() => sendReaction(emoji)}
+                  aria-label={`React with ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -180,7 +273,7 @@ export default function Room() {
                     key={`${member.socketId}-label`}
                     className={`participant-chip ${member.userName === user ? 'participant-chip-active' : ''}`}
                   >
-                    {member.userName} · {ROLE_LABELS[member.role] || member.role}
+                    {member.userName} - {ROLE_LABELS[member.role] || member.role}
                   </span>
                 ))}
               </div>
@@ -189,12 +282,65 @@ export default function Room() {
 
           <Playlist
             videos={playlist}
+            videoTitles={videoTitles}
             currentVideoId={currentVideoId}
-            canControl={canControlVideo}
+            canSelectVideo={canSelectVideo}
             controllerName={directorName}
             onAdd={handleSelectVideo}
             onSelect={handleSelectVideo}
           />
+
+          {canManageRoles && (
+            <div className="card role-manager">
+              <div className="role-manager-header">
+                <div>
+                  <h2>Roles</h2>
+                  <p className="muted small">
+                    Tous les participants gardent le chat. La lecture et le changement de video sont assignes
+                    separement.
+                  </p>
+                </div>
+                <div className="role-chip role-chip-control">Acces directeur</div>
+              </div>
+
+              <div className="role-manager-list">
+                {participants.map((member) => {
+                  const isDirector = member.role === 'director';
+                  const isCurrentUser = member.socketId && member.userName === user;
+
+                  return (
+                    <div key={`role-${member.socketId}`} className="role-manager-row">
+                      <div>
+                        <div className="role-manager-name">
+                          {member.userName}
+                          {isCurrentUser ? ' (vous)' : ''}
+                        </div>
+                        <p className="muted small">
+                          {ROLE_DESCRIPTIONS[member.role] || ROLE_DESCRIPTIONS.participant}
+                        </p>
+                      </div>
+
+                      {isDirector ? (
+                        <div className="role-manager-badge">{ROLE_LABELS[member.role]}</div>
+                      ) : (
+                        <select
+                          className="role-manager-select"
+                          value={member.role}
+                          onChange={(event) => handleRoleChange(member.socketId, event.target.value)}
+                        >
+                          {ROLE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="room-chat">

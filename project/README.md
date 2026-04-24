@@ -23,9 +23,10 @@ Note:
 
 ## Roles
 
-- `director`: cree le salon et pilote la video partagee
+- `director`: cree le salon, attribue les roles et garde le controle total
+- `moderator`: peut gerer la lecture partagee (`play`, `pause`, `restart`, `seek`)
+- `video_manager`: peut changer la video diffusee pour tout le salon
 - `participant`: suit l'etat synchronise et garde acces au chat
-- `moderator`: role prevu cote backend pour une extension future
 
 ## Lancement local
 

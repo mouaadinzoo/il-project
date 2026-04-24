@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
+const ROLE_LABELS = {
+  director: 'Realisateur',
+  moderator: 'Moderateur',
+  video_manager: 'Video',
+  participant: 'Participant'
+};
+
 // Chat pane synced via socket events.
 export default function Chat({ user, messages, onSend, title = 'Chat' }) {
   const [text, setText] = useState('');
@@ -29,7 +36,12 @@ export default function Chat({ user, messages, onSend, title = 'Chat' }) {
             <div className="chat-avatar">{(msg.user || 'G')[0]}</div>
             <div className="chat-bubble">
               <div className="chat-meta">
-                <span className="chat-name">{msg.user || 'Guest'}</span>
+                <span className="chat-name-row">
+                  <span className="chat-name">{msg.user || 'Guest'}</span>
+                  <span className={`chat-role-badge chat-role-${msg.role || 'participant'}`}>
+                    {ROLE_LABELS[msg.role] || ROLE_LABELS.participant}
+                  </span>
+                </span>
                 <span className="chat-time">
                   {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>

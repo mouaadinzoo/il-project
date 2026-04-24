@@ -48,6 +48,18 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS room_role_assignments (
+    room_id TEXT NOT NULL,
+    actor_key TEXT NOT NULL,
+    role TEXT NOT NULL,
+    assigned_by_user_id INTEGER,
+    assigned_by_name TEXT NOT NULL,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (room_id, actor_key),
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
   CREATE TABLE IF NOT EXISTS room_state (
     room_id TEXT PRIMARY KEY,
     action TEXT NOT NULL,

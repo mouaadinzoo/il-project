@@ -6,8 +6,10 @@ Cette evolution transforme le MVP WatchTogether en salon avec controle centralis
 
 - Le createur du salon devient `director`.
 - Les autres rejoignent en `participant`.
-- Le role `moderator` est reserve pour une extension future.
-- Seul le `director` peut piloter la video partagee.
+- Le `director` peut attribuer les roles connectes depuis l'interface du salon.
+- Le role `moderator` controle la lecture partagee (`play`, `pause`, `restart`, `seek`).
+- Le role `video_manager` peut changer la video On-Air.
+- Le `participant` garde le chat mais ne pilote pas la video globale.
 
 ## Source de verite
 
@@ -38,6 +40,7 @@ Client vers serveur:
 - `pause_video`
 - `seek_video`
 - `select_video`
+- `assign_role`
 - `chat_message`
 
 Serveur vers client:
@@ -58,9 +61,10 @@ Compatibilite legacy:
 
 La validation est faite cote serveur dans `src/utils/roomPermissions.js`.
 
-- `director` : controle total de la video partagee
+- `director` : attribue les roles, controle la lecture et change la video partagee
+- `moderator` : lecture autorisee, changement de video interdit
+- `video_manager` : changement de video autorise, lecture/pause/seek interdits
 - `participant` : chat autorise, video globale interdite
-- `moderator` : role present mais sans droits video pour l'instant
 
 Si un utilisateur non autorise envoie une commande globale, le serveur repond avec `permission_denied`.
 

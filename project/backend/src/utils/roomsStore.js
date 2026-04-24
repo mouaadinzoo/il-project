@@ -1,9 +1,27 @@
 const crypto = require('crypto');
 const { db } = require('../db');
-const { ROOM_ROLES } = require('./roomPermissions');
+const {
+  ROOM_ROLES,
+  DEFAULT_ROLE,
+  resolveActorKey,
+  isAssignableRole
+} = require('./roomPermissions');
 
 const rooms = new Map();
-const defaultVideoId = 'dQw4w9WgXcQ';
+const LEGACY_DEFAULT_VIDEO_ID = 'dQw4w9WgXcQ';
+const DEFAULT_PLAYLIST_VIDEO_IDS = [
+  'M7lc1UVf-VE',
+  'dQw4w9WgXcQ',
+  'fJ9rUzIMcZQ',
+  'kJQP7kiw5Fk',
+  '9bZkp7q19f0',
+  'L_jWHffIx5E',
+  '3JZ_D3ELwOQ',
+  '60ItHLz5WEA',
+  'RgKAFK5djSk',
+  'hT_nvWreIhg'
+];
+const defaultVideoId = DEFAULT_PLAYLIST_VIDEO_IDS[0];
 const MAX_AUDIT_LOG = 20;
 
 const nowIso = () => new Date().toISOString();
@@ -81,20 +99,47 @@ function serializeRoomResponse(room, { includeControllerToken = false } = {}) {
   return response;
 }
 
-function hydratePlaylist(roomId, fallbackVideoId) {
-  const rows = db
+function loadStoredPlaylist(roomId) {
+  return db
     .prepare(
       `SELECT video_id
        FROM videos
        WHERE room_id = ?
        ORDER BY id ASC`
     )
-    .all(roomId);
+    .all(roomId)
+    .map((row) => row.video_id)
+    .filter(Boolean);
+}
 
-  const playlist = rows.map((row) => row.video_id).filter(Boolean);
-  if (!playlist.length && fallbackVideoId) {
-    playlist.push(fallbackVideoId);
+function buildSeedPlaylist(primaryVideoId = defaultVideoId) {
+  const playlist = [...DEFAULT_PLAYLIST_VIDEO_IDS];
+  if (primaryVideoId && !playlist.includes(primaryVideoId)) {
+    playlist.unshift(primaryVideoId);
   }
+  return playlist;
+}
+
+function shouldReplaceLegacySingleVideoPlaylist(playlist, currentVideoId) {
+  return (
+    Array.isArray(playlist) &&
+    playlist.length === 1 &&
+    playlist[0] === LEGACY_DEFAULT_VIDEO_ID &&
+    currentVideoId === LEGACY_DEFAULT_VIDEO_ID
+  );
+}
+
+function hydratePlaylist(roomId, fallbackVideoId) {
+  const playlist = loadStoredPlaylist(roomId);
+
+  if (!playlist.length) {
+    return buildSeedPlaylist(fallbackVideoId || defaultVideoId);
+  }
+
+  if (shouldReplaceLegacySingleVideoPlaylist(playlist, fallbackVideoId)) {
+    return buildSeedPlaylist(defaultVideoId);
+  }
+
   if (fallbackVideoId && !playlist.includes(fallbackVideoId)) {
     playlist.unshift(fallbackVideoId);
   }
@@ -116,12 +161,39 @@ function hydrateAuditLog(roomId) {
   return rows.map(mapAuditRow).reverse();
 }
 
+function hydrateRoleAssignments(roomId) {
+  const rows = db
+    .prepare(
+      `SELECT actor_key, role
+       FROM room_role_assignments
+       WHERE room_id = ?`
+    )
+    .all(roomId);
+
+  return new Map(
+    rows
+      .filter((row) => row.actor_key && row.role)
+      .map((row) => [row.actor_key, row.role])
+  );
+}
+
 function buildRoom(roomRow, stateRow) {
-  const currentVideoId = stateRow?.video_id || defaultVideoId;
-  const playbackStatus = normalizePlaybackStatus(stateRow?.action);
-  const updatedAt = stateRow?.updated_at || nowIso();
-  const currentTime = clampTime(stateRow?.time);
-  const playlist = hydratePlaylist(roomRow.id, currentVideoId);
+  const storedCurrentVideoId = stateRow?.video_id || defaultVideoId;
+  const storedPlaylist = loadStoredPlaylist(roomRow.id);
+  const replacesLegacyPlaylist = shouldReplaceLegacySingleVideoPlaylist(
+    storedPlaylist,
+    storedCurrentVideoId
+  );
+  const currentVideoId = replacesLegacyPlaylist ? defaultVideoId : storedCurrentVideoId;
+  const playlist =
+    !storedPlaylist.length || replacesLegacyPlaylist
+      ? buildSeedPlaylist(currentVideoId)
+      : hydratePlaylist(roomRow.id, currentVideoId);
+  const playbackStatus = replacesLegacyPlaylist
+    ? 'paused'
+    : normalizePlaybackStatus(stateRow?.action);
+  const updatedAt = replacesLegacyPlaylist ? nowIso() : stateRow?.updated_at || nowIso();
+  const currentTime = replacesLegacyPlaylist ? 0 : clampTime(stateRow?.time);
   const auditLog = hydrateAuditLog(roomRow.id);
   const lastLog = auditLog[auditLog.length - 1];
 
@@ -132,7 +204,7 @@ function buildRoom(roomRow, stateRow) {
     directorUserId: roomRow.host_user_id || null,
     directorSecret: roomRow.host_secret,
     directorSocketId: null,
-    moderators: new Set(),
+    roleAssignments: hydrateRoleAssignments(roomRow.id),
     connectedUsers: new Map(),
     playlist,
     auditLog,
@@ -284,9 +356,9 @@ function createRoom(name = 'Room', userName, userId) {
     directorUserId: userId || null,
     directorSecret,
     directorSocketId: null,
-    moderators: new Set(),
+    roleAssignments: new Map(),
     connectedUsers: new Map(),
-    playlist: [defaultVideoId],
+    playlist: [...DEFAULT_PLAYLIST_VIDEO_IDS],
     auditLog: [],
     state: {
       roomId: id,
@@ -303,7 +375,7 @@ function createRoom(name = 'Room', userName, userId) {
   };
 
   rooms.set(id, room);
-  recordVideo(id, defaultVideoId);
+  DEFAULT_PLAYLIST_VIDEO_IDS.forEach((videoId) => recordVideo(id, videoId));
   appendAuditLog(room, {
     actorUserId: userId || null,
     actorName: directorName,
@@ -399,6 +471,45 @@ function getRoomSnapshot(roomId) {
   };
 }
 
+function persistRoleAssignment(room, actorKey, role, actor = {}) {
+  if (!room || !actorKey) return;
+
+  if (role === DEFAULT_ROLE) {
+    db.prepare(
+      `DELETE FROM room_role_assignments
+       WHERE room_id = ? AND actor_key = ?`
+    ).run(room.id, actorKey);
+    room.roleAssignments.delete(actorKey);
+    return;
+  }
+
+  const assignedAt = nowIso();
+  db.prepare(
+    `INSERT INTO room_role_assignments (
+      room_id,
+      actor_key,
+      role,
+      assigned_by_user_id,
+      assigned_by_name,
+      assigned_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(room_id, actor_key)
+    DO UPDATE SET role = excluded.role,
+                  assigned_by_user_id = excluded.assigned_by_user_id,
+                  assigned_by_name = excluded.assigned_by_name,
+                  assigned_at = excluded.assigned_at`
+  ).run(
+    room.id,
+    actorKey,
+    role,
+    actor.userId || null,
+    actor.userName || 'Guest',
+    assignedAt
+  );
+
+  room.roleAssignments.set(actorKey, role);
+}
+
 function addConnectedUser(roomId, member) {
   const room = getRoom(roomId);
   if (!room || !member?.socketId) return null;
@@ -407,7 +518,7 @@ function addConnectedUser(roomId, member) {
     socketId: member.socketId,
     userId: member.userId || null,
     userName: member.userName || 'Guest',
-    role: member.role || ROOM_ROLES.PARTICIPANT,
+    role: member.role || DEFAULT_ROLE,
     joinedAt: member.joinedAt || nowIso()
   };
 
@@ -417,6 +528,71 @@ function addConnectedUser(roomId, member) {
   }
 
   return connectedMember;
+}
+
+function assignRoomRole(roomId, target = {}, nextRole, actor = {}) {
+  const room = getRoom(roomId);
+  if (!room) {
+    throw new Error('Room not found');
+  }
+
+  if (!target.socketId) {
+    throw new Error('A connected participant is required.');
+  }
+
+  if (!isAssignableRole(nextRole)) {
+    throw new Error('Invalid role.');
+  }
+
+  const member = room.connectedUsers.get(target.socketId);
+  if (!member) {
+    throw new Error('Participant not found.');
+  }
+
+  if (member.role === ROOM_ROLES.DIRECTOR) {
+    throw new Error('The director role cannot be reassigned.');
+  }
+
+  const actorKey = resolveActorKey(member.userId, member.userName);
+  persistRoleAssignment(room, actorKey, nextRole, actor);
+
+  const updatedMembers = Array.from(room.connectedUsers.values())
+    .filter((connectedMember) => {
+      const connectedKey = resolveActorKey(connectedMember.userId, connectedMember.userName);
+      return connectedKey === actorKey;
+    })
+    .map((connectedMember) => {
+      const updatedMember = {
+        ...connectedMember,
+        role: nextRole
+      };
+      room.connectedUsers.set(updatedMember.socketId, updatedMember);
+      return updatedMember;
+    });
+
+  const updatedMember =
+    updatedMembers.find((connectedMember) => connectedMember.socketId === target.socketId) ||
+    updatedMembers[0];
+  room.state.lastAction = 'assign_role';
+  room.state.lastActorName = actor.userName || room.directorName || 'Guest';
+
+  appendAuditLog(room, {
+    actorUserId: actor.userId || null,
+    actorName: actor.userName || 'Guest',
+    actorRole: actor.role || DEFAULT_ROLE,
+    action: 'assign_role',
+    meta: {
+      targetUserId: updatedMember.userId || null,
+      targetUserName: updatedMember.userName,
+      assignedRole: nextRole
+    }
+  });
+
+  return {
+    member: updatedMember,
+    members: updatedMembers,
+    snapshot: getRoomSnapshot(room)
+  };
 }
 
 function removeConnectedUser(roomId, socketId) {
@@ -486,7 +662,7 @@ function applyRoomCommand(roomId, action, payload = {}, actor = {}) {
   room.state.currentVideoId = nextVideoId;
   room.state.currentTime = nextCurrentTime;
   room.state.updatedAt = updatedAt;
-  room.state.controllerRole = ROOM_ROLES.DIRECTOR;
+  room.state.controllerRole = actor.role || ROOM_ROLES.DIRECTOR;
   room.state.directorUserId = room.directorUserId;
   room.state.lastAction = action;
   room.state.lastActorName = actor.userName || room.directorName || 'Guest';
@@ -495,7 +671,7 @@ function applyRoomCommand(roomId, action, payload = {}, actor = {}) {
   appendAuditLog(room, {
     actorUserId: actor.userId || null,
     actorName: actor.userName || 'Guest',
-    actorRole: actor.role || ROOM_ROLES.PARTICIPANT,
+    actorRole: actor.role || DEFAULT_ROLE,
     action,
     meta: {
       currentVideoId: room.state.currentVideoId,
@@ -511,11 +687,13 @@ function applyRoomCommand(roomId, action, payload = {}, actor = {}) {
 module.exports = {
   rooms,
   defaultVideoId,
+  DEFAULT_PLAYLIST_VIDEO_IDS,
   createRoom,
   joinRoom,
   getRoom,
   getRoomSnapshot,
   addConnectedUser,
+  assignRoomRole,
   removeConnectedUser,
   applyRoomCommand,
   recordMessage,
